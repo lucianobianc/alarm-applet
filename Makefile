@@ -15,7 +15,7 @@ test: tests/test_alarm
 	TZ=UTC ./tests/test_alarm
 
 clean:
-	rm -f alarm-applet tests/test_alarm tests/test_sound
+	rm -f alarm-applet tests/test_alarm tests/test_sound tests/test_tray
 .PHONY: all test clean
 
 PREFIX ?= $(HOME)/.local
@@ -34,3 +34,10 @@ install-autostart: install
 	mkdir -p $(DESTDIR)$(HOME)/.config/autostart
 	sed 's|Exec=alarm-applet --hidden|Exec=$(PREFIX)/bin/alarm-applet --hidden|' data/alarm-applet.desktop > $(DESTDIR)$(HOME)/.config/autostart/alarm-applet.desktop
 .PHONY: test-audio install-autostart
+
+tests/test_tray: tests/test_tray.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< -lX11
+
+test-tray: alarm-applet tests/test_tray
+	./tests/test_tray
+.PHONY: test-tray

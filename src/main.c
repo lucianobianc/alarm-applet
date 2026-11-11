@@ -29,6 +29,7 @@ static struct timespec ring_end;
 static char data_path[4096];
 static const char *day_names[]={"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 static Window tray;
+static XtEventDispatchProc previous_dispatch[LASTEvent];
 static int start_hidden;
 static int dock(void);
 static void error_message(const char *message) {
@@ -149,15 +150,24 @@ static void tick(XtPointer p,XtIntervalId *id) {
 }
 static void hide(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; if(tray) XtUnmapWidget(shell); else XIconifyWindow(XtDisplay(shell),XtWindow(shell),DefaultScreen(XtDisplay(shell))); }
 static void quit(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; sound_stop(&sound_pid); XtAppSetExitFlag(app); }
-static void tray_event(Widget w,XtPointer p,XEvent *event,Boolean *dispatch) {
-    (void)w;(void)p;(void)dispatch;
-    if(event->xany.window!=tray) return;
-    if(event->type==ButtonPress) XtMapWidget(shell);
-    if(event->type==Expose) {
-        Display *d=XtDisplay(shell); GC gc=XCreateGC(d,tray,0,NULL);
-        XSetForeground(d,gc,BlackPixel(d,DefaultScreen(d)));
-        XDrawArc(d,tray,gc,3,3,16,16,0,360*64); XDrawLine(d,tray,gc,11,6,11,11); XDrawLine(d,tray,gc,11,11,15,13); XFreeGC(d,gc);
+/* Tray windows are raw X11 windows. Never dispatch their XEmbed messages
+ * through the Motif shell: its protocol handler requires the shell's window. */
+static Boolean dispatch_event(XEvent *event) {
+    if(tray && event->xany.window==tray) {
+        if(event->type==ButtonPress) XtMapWidget(shell);
+        if(event->type==Expose) {
+            Display *d=XtDisplay(shell); GC gc=XCreateGC(d,tray,0,NULL);
+            XSetForeground(d,gc,BlackPixel(d,DefaultScreen(d)));
+            XDrawArc(d,tray,gc,3,3,16,16,0,360*64);
+            XDrawLine(d,tray,gc,11,6,11,11);
+            XDrawLine(d,tray,gc,11,11,15,13);
+            XFreeGC(d,gc);
+        }
+        return True;
     }
+    if(event->type>=0 && event->type<LASTEvent && previous_dispatch[event->type])
+        return previous_dispatch[event->type](event);
+    return False;
 }
 static int dock(void) {
     Display *d=XtDisplay(shell); char name[64]; snprintf(name,sizeof name,"_NET_SYSTEM_TRAY_S%d",DefaultScreen(d));
@@ -165,7 +175,7 @@ static int dock(void) {
     tray=XCreateSimpleWindow(d,DefaultRootWindow(d),0,0,24,24,0,0,WhitePixel(d,DefaultScreen(d)));
     unsigned long info[2]={0,1}; Atom embed=XInternAtom(d,"_XEMBED_INFO",False);
     XChangeProperty(d,tray,embed,embed,32,PropModeReplace,(unsigned char *)info,2);
-    XSelectInput(d,tray,ExposureMask|ButtonPressMask); XtRegisterDrawable(d,tray,shell);
+    XSelectInput(d,tray,ExposureMask|ButtonPressMask);
     XEvent event={0}; event.xclient.type=ClientMessage; event.xclient.window=manager;
     event.xclient.message_type=XInternAtom(d,"_NET_SYSTEM_TRAY_OPCODE",False); event.xclient.format=32;
     event.xclient.data.l[0]=CurrentTime; event.xclient.data.l[1]=0; event.xclient.data.l[2]=(long)tray;
@@ -199,7 +209,8 @@ int main(int argc,char **argv) {
     refresh(); XtRealizeWidget(shell);
     Atom close_atom=XmInternAtom(XtDisplay(shell),"WM_DELETE_WINDOW",False);
     XtVaSetValues(shell,XmNdeleteResponse,XmDO_NOTHING,NULL); XmAddWMProtocolCallback(shell,close_atom,hide,NULL);
-    XtAddEventHandler(shell,ExposureMask|ButtonPressMask,False,tray_event,NULL);
+    for(int type=2;type<LASTEvent;type++)
+        previous_dispatch[type]=XtSetEventDispatcher(XtDisplay(shell),type,dispatch_event);
     int docked=dock(); if(hidden && docked) { XtUnmapWidget(shell); start_hidden=0; }
     if(!docked) fprintf(stderr,"No X11 system tray is available; keeping the window visible.\n");
     tick(NULL,NULL); XtAppMainLoop(app); XtDestroyWidget(shell); close(lock_fd); return 0;
