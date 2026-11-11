@@ -21,8 +21,10 @@ clean:
 
 PREFIX ?= $(HOME)/.local
 install: alarm-applet
-	install -Dm755 alarm-applet $(DESTDIR)$(PREFIX)/bin/alarm-applet
-	install -Dm644 data/alarm-applet.desktop $(DESTDIR)$(PREFIX)/share/applications/alarm-applet.desktop
+	install -Dm755 alarm-applet "$(DESTDIR)$(PREFIX)/bin/alarm-applet"
+	install -d "$(DESTDIR)$(PREFIX)/share/applications"
+	sed 's|^Exec=.*|Exec="$(PREFIX)/bin/alarm-applet"|' data/alarm-applet.desktop > "$(DESTDIR)$(PREFIX)/share/applications/alarm-applet.desktop"
+	chmod 644 "$(DESTDIR)$(PREFIX)/share/applications/alarm-applet.desktop"
 .PHONY: install
 
 tests/test_sound: tests/test_sound.c src/sound.c src/sound.h
@@ -32,8 +34,8 @@ test-audio: tests/test_sound
 	python3 tests/test_sound.py
 
 install-autostart: install
-	mkdir -p $(DESTDIR)$(HOME)/.config/autostart
-	sed 's|Exec=alarm-applet --hidden|Exec=$(PREFIX)/bin/alarm-applet --hidden|' data/alarm-applet.desktop > $(DESTDIR)$(HOME)/.config/autostart/alarm-applet.desktop
+	mkdir -p "$(DESTDIR)$(HOME)/.config/autostart"
+	sed 's|^Exec=.*|Exec="$(PREFIX)/bin/alarm-applet" --hidden|' data/alarm-applet.desktop > "$(DESTDIR)$(HOME)/.config/autostart/alarm-applet.desktop"
 .PHONY: test-audio install-autostart
 
 tests/test_tray: tests/test_tray.c
