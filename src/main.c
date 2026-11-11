@@ -1,5 +1,7 @@
 #include "alarm.h"
 #include "sound.h"
+#include "storage.h"
+#include <signal.h>
 #include <sys/wait.h>
 #include <Xm/Xm.h>
 #include <Xm/Form.h>
@@ -28,7 +30,17 @@ static pid_t sound_pid;
 static struct timespec ring_end;
 static char data_path[4096];
 static const char *day_names[]={"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-static Window tray;
+static Window tray, tray_manager;
+static int tray_embedded;
+static volatile sig_atomic_t window_requested, stop_requested;
+static void process_signal(int signal_number) {
+    if(signal_number==SIGUSR1) window_requested=1;
+    else if(signal_number==SIGUSR2) window_requested=-1;
+    else stop_requested=1;
+}
+static void show_window(void) {
+    XtMapWidget(shell); XRaiseWindow(XtDisplay(shell),XtWindow(shell));
+}
 static XtEventDispatchProc previous_dispatch[LASTEvent];
 static int start_hidden;
 static int dock(void);
@@ -41,15 +53,12 @@ static void error_message(const char *message) {
     XtManageChild(dialog);
 }
 static int save(void) {
-    char temporary[4120]; snprintf(temporary,sizeof temporary,"%s.tmp",data_path);
-    FILE *f=fopen(temporary,"w");
-    if (!f) { error_message("Cannot save alarms."); return 0; }
-    int ok=1;
-    for(int i=0;i<count;i++) if(fprintf(f,"%d %d %d %d %d\n",alarms[i].hour,alarms[i].minute,alarms[i].days,alarms[i].duration,alarms[i].frequency)<0) ok=0;
-    if(fclose(f)) ok=0;
-    if(!ok || rename(temporary,data_path)) { unlink(temporary); error_message("Cannot save alarms."); return 0; }
+    if(alarms_save(data_path,alarms,count)<0) {
+        error_message("Cannot save alarms."); return 0;
+    }
     return 1;
 }
+
 static void refresh(void) {
     XmListDeleteAllItems(list);
     for(int i=0;i<count;i++) {
@@ -80,7 +89,11 @@ static void commit_edit(Widget w,XtPointer p,XtPointer c) {
     for(int d=0;d<7;d++) if(XmToggleButtonGetState(days[d])) a.days|=1<<d;
     if(!alarm_valid(&a)) { error_message("Enter a valid time, select at least one day, use a duration of 1-3600 seconds and a frequency of 20-20000 Hz."); return; }
     Alarm old={0}; int old_count=count;
-    if(editing<0) alarms[count++]=a; else { old=alarms[editing]; alarms[editing]=a; }
+    if(editing<0) alarms[count++]=a; else {
+        old=alarms[editing];
+        if(a.hour==old.hour && a.minute==old.minute) a.last_fired=old.last_fired;
+        alarms[editing]=a;
+    }
     if(!save()) { count=old_count; if(editing>=0) alarms[editing]=old; return; }
     refresh(); cancel_edit(w,p,c);
 }
@@ -106,6 +119,10 @@ static void open_edit(Widget w,XtPointer p,XtPointer c) {
     if(editing<0 && count==MAX_ALARMS) { error_message("The alarm limit is 128."); return; }
     Alarm a=editing<0?(Alarm){9,0,127,5,1000,0}:alarms[editing];
     editor=XmCreateFormDialog(shell,"Alarm",NULL,0);
+    XtVaSetValues(editor,XmNdialogStyle,XmDIALOG_FULL_APPLICATION_MODAL,NULL);
+    Atom close_editor=XmInternAtom(XtDisplay(shell),"WM_DELETE_WINDOW",False);
+    XtVaSetValues(XtParent(editor),XmNdeleteResponse,XmDO_NOTHING,NULL);
+    XmAddWMProtocolCallback(XtParent(editor),close_editor,cancel_edit,NULL);
     Widget column=XtVaCreateManagedWidget("fields",xmRowColumnWidgetClass,editor,NULL);
     hour_input=field(column,"Hour",a.hour); minute_input=field(column,"Minute",a.minute);
     twelve=XtVaCreateManagedWidget("12-hour format",xmToggleButtonWidgetClass,column,NULL);
@@ -129,16 +146,26 @@ static void remove_alarm(Widget w,XtPointer p,XtPointer c) {
 static void stop(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; ringing=0; sound_stop(&sound_pid); }
 static void tick(XtPointer p,XtIntervalId *id) {
     (void)p;(void)id;
-    if(!tray && dock() && start_hidden) { XtUnmapWidget(shell); start_hidden=0; }
-    time_t now=time(NULL); struct timespec mono; clock_gettime(CLOCK_MONOTONIC,&mono);
-    for(int i=0;i<count;i++) if(alarm_due(&alarms[i],now)) {
-        time_t end=mono.tv_sec+alarms[i].duration;
-        if(!ringing || end>ring_end.tv_sec) {ring_end.tv_sec=end;ring_end.tv_nsec=mono.tv_nsec;}
-        ringing=1;
-        sound_stop(&sound_pid);
-        sound_pid=sound_start((unsigned)(ring_end.tv_sec-mono.tv_sec),(unsigned)alarms[i].frequency);
-        if(sound_pid<0) { ringing=0; error_message("Cannot start audio playback."); }
+    if(stop_requested) { sound_stop(&sound_pid); XtAppSetExitFlag(app); return; }
+    if(window_requested) {
+        sig_atomic_t requested=window_requested; window_requested=0;
+        if(requested>0) show_window(); else XtUnmapWidget(shell);
     }
+    dock();
+    time_t now=time(NULL); struct timespec mono; clock_gettime(CLOCK_MONOTONIC,&mono);
+    int fired=0;
+    for(int i=0;i<count;i++) if(alarm_due(&alarms[i],now)) {
+        fired=1;
+        time_t end=mono.tv_sec+alarms[i].duration;
+        if(!ringing || end>ring_end.tv_sec) {
+            ring_end.tv_sec=end; ring_end.tv_nsec=mono.tv_nsec;
+            ringing=1;
+            sound_stop(&sound_pid);
+            sound_pid=sound_start((unsigned)alarms[i].duration,(unsigned)alarms[i].frequency);
+            if(sound_pid<0) { ringing=0; error_message("Cannot start audio playback."); }
+        }
+    }
+    if(fired) save();
     if(ringing && (mono.tv_sec>ring_end.tv_sec || (mono.tv_sec==ring_end.tv_sec && mono.tv_nsec>=ring_end.tv_nsec))) ringing=0;
     if(sound_pid>0) {
         int status;
@@ -149,7 +176,7 @@ static void tick(XtPointer p,XtIntervalId *id) {
     }
     XtAppAddTimeOut(app,500,tick,NULL);
 }
-static void hide(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; if(tray) XtUnmapWidget(shell); else XIconifyWindow(XtDisplay(shell),XtWindow(shell),DefaultScreen(XtDisplay(shell))); }
+static void hide(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; if(tray_embedded) XtUnmapWidget(shell); else XIconifyWindow(XtDisplay(shell),XtWindow(shell),DefaultScreen(XtDisplay(shell))); }
 /* Tray windows are raw X11 windows. Never dispatch their XEmbed messages
  * through the Motif shell: its protocol handler requires the shell's window. */
 static Boolean dispatch_event(XEvent *event) {
@@ -157,9 +184,11 @@ static Boolean dispatch_event(XEvent *event) {
         if(event->type==ClientMessage &&
            event->xclient.message_type==XInternAtom(XtDisplay(shell),"_XEMBED",False) &&
            event->xclient.data.l[1]==0) {
+            tray_embedded=1;
             XMapWindow(XtDisplay(shell),tray);
         }
-        if(event->type==ButtonPress) XtMapWidget(shell);
+        if(event->type==ButtonPress) show_window();
+        if(event->type==DestroyNotify) { tray=0; tray_embedded=0; }
         if(event->type==Expose) {
             Display *d=XtDisplay(shell); GC gc=XCreateGC(d,tray,0,NULL);
             XSetForeground(d,gc,BlackPixel(d,DefaultScreen(d)));
@@ -174,9 +203,24 @@ static Boolean dispatch_event(XEvent *event) {
         return previous_dispatch[event->type](event);
     return False;
 }
+static int ignore_destroyed_tray(Display *display,XErrorEvent *event) {
+    (void)display;
+    if(event->error_code==BadWindow && event->resourceid==tray) return 0;
+    char message[256]; XGetErrorText(display,event->error_code,message,sizeof message);
+    fprintf(stderr,"X11: %s\n",message); return 0;
+}
 static int dock(void) {
     Display *d=XtDisplay(shell); char name[64]; snprintf(name,sizeof name,"_NET_SYSTEM_TRAY_S%d",DefaultScreen(d));
-    Window manager=XGetSelectionOwner(d,XInternAtom(d,name,False)); if(!manager)return 0;
+    Window manager=XGetSelectionOwner(d,XInternAtom(d,name,False));
+    if(manager==tray_manager && tray) return tray_embedded;
+    if(tray) {
+        /* The previous panel may already have destroyed its child window. */
+        int (*previous)(Display *,XErrorEvent *)=XSetErrorHandler(ignore_destroyed_tray);
+        XDestroyWindow(d,tray); XSync(d,False); XSetErrorHandler(previous);
+        tray=0;
+    }
+    tray_manager=manager; tray_embedded=0;
+    if(!manager) return 0;
     tray=XCreateSimpleWindow(d,DefaultRootWindow(d),0,0,24,24,0,0,WhitePixel(d,DefaultScreen(d)));
     XSizeHints size={0};
     size.flags=PMinSize|PMaxSize|PBaseSize|PSize;
@@ -190,7 +234,7 @@ static int dock(void) {
     XStoreName(d,tray,"Alarm Applet Tray");
     unsigned long info[2]={0,1}; Atom embed=XInternAtom(d,"_XEMBED_INFO",False);
     XChangeProperty(d,tray,embed,embed,32,PropModeReplace,(unsigned char *)info,2);
-    XSelectInput(d,tray,ExposureMask|ButtonPressMask);
+    XSelectInput(d,tray,ExposureMask|ButtonPressMask|StructureNotifyMask);
     XEvent event={0}; event.xclient.type=ClientMessage; event.xclient.window=manager;
     event.xclient.message_type=XInternAtom(d,"_NET_SYSTEM_TRAY_OPCODE",False); event.xclient.format=32;
     event.xclient.data.l[0]=CurrentTime; event.xclient.data.l[1]=0; event.xclient.data.l[2]=(long)tray;
@@ -198,36 +242,62 @@ static int dock(void) {
     XFlush(d); return 1;
 }
 int main(int argc,char **argv) {
-    int hidden=argc>1 && !strcmp(argv[1],"--hidden");
-    start_hidden=hidden;
-    if(hidden) { argc--; argv[1]=NULL; }
-    const char *home=getenv("HOME"),*config=getenv("XDG_CONFIG_HOME"); char directory[4096];
-    if(config && *config) snprintf(directory,sizeof directory,"%s/alarm-applet",config);
-    else if(home) snprintf(directory,sizeof directory,"%s/.config/alarm-applet",home);
-    else { fputs("HOME or XDG_CONFIG_HOME is required.\n",stderr); return 1; }
-    char parent[4096]; snprintf(parent,sizeof parent,"%s",directory); char *slash=strrchr(parent,'/');
-    if(slash) { *slash=0; if(mkdir(parent,0700) && errno!=EEXIST) {perror(parent);return 1;} }
-    if(mkdir(directory,0700) && errno!=EEXIST) {perror(directory);return 1;}
-    if(snprintf(data_path,sizeof data_path,"%s/alarms",directory)>=(int)sizeof data_path) return 1;
-    char lock_path[4120]; snprintf(lock_path,sizeof lock_path,"%s.lock",data_path);
-    int lock_fd=open(lock_path,O_CREAT|O_RDWR,0600);
-    struct flock lock={.l_type=F_WRLCK,.l_whence=SEEK_SET};
-    if(lock_fd<0 || fcntl(lock_fd,F_SETLK,&lock)<0) { fputs("Alarm Applet is already running or its data directory is unavailable.\n",stderr); return 1; }
-    FILE *f=fopen(data_path,"r");
-    if(f) {
-        char line[256];
-        while(count<MAX_ALARMS && fgets(line,sizeof line,f)) {
-            Alarm a={.frequency=1000};
-            int fields=sscanf(line,"%d %d %d %d %d",&a.hour,&a.minute,&a.days,&a.duration,&a.frequency);
-            if(fields>=4 && alarm_valid(&a)) alarms[count++]=a;
+    int hidden=0,remaining=1;
+    for(int i=1;i<argc;i++) {
+        if(!strcmp(argv[i],"--hidden")) hidden=1;
+        else if(!strcmp(argv[i],"--help")) {
+            puts("Usage: alarm-applet [--hidden] [Xt options]\n--hidden  Start without opening the alarm window.");
+            return 0;
         }
-        fclose(f);
+        else argv[remaining++]=argv[i];
     }
+    argc=remaining; argv[argc]=NULL; start_hidden=hidden;
+    struct sigaction action={0};
+    action.sa_handler=process_signal; action.sa_flags=SA_RESTART; sigemptyset(&action.sa_mask);
+    sigaction(SIGUSR1,&action,NULL); sigaction(SIGUSR2,&action,NULL); sigaction(SIGTERM,&action,NULL); sigaction(SIGINT,&action,NULL);
     static String defaults[]={
         "*fontList: -*-helvetica-medium-r-normal--18-*-*-*-*-*-iso8859-1",
         NULL
     };
-    shell=XtVaAppInitialize(&app,"AlarmApplet",NULL,0,&argc,argv,defaults,XmNtitle,"Alarm Applet",NULL);
+    shell=XtVaAppInitialize(&app,"AlarmApplet",NULL,0,&argc,argv,defaults,XmNtitle,"Alarm Applet",XmNmappedWhenManaged,False,NULL);
+    if(argc>1) { fprintf(stderr,"Unknown argument: %s\nUse --help for usage.\n",argv[1]); XtDestroyWidget(shell); return 2; }
+    const char *home=getenv("HOME"),*config=getenv("XDG_CONFIG_HOME"); char directory[4096];
+    int path_length;
+    if(config && *config=='/') path_length=snprintf(directory,sizeof directory,"%s/alarm-applet",config);
+    else if(home) path_length=snprintf(directory,sizeof directory,"%s/.config/alarm-applet",home);
+    else { fputs("HOME or XDG_CONFIG_HOME is required.\n",stderr); return 1; }
+    if(path_length<0 || path_length>=(int)sizeof directory) { fputs("Configuration path is too long.\n",stderr); return 1; }
+    if(make_directory(directory)<0) {perror(directory);return 1;}
+    if(snprintf(data_path,sizeof data_path,"%s/alarms",directory)>=(int)sizeof data_path) return 1;
+    char lock_path[4120]; snprintf(lock_path,sizeof lock_path,"%s.lock",data_path);
+    int lock_fd=open(lock_path,O_CREAT|O_RDWR,0600);
+    struct flock lock={.l_type=F_WRLCK,.l_whence=SEEK_SET};
+    if(lock_fd<0) {perror("Alarm data lock");return 1;}
+    if(fcntl(lock_fd,F_SETLK,&lock)<0) {
+        if(errno==EACCES || errno==EAGAIN) {
+            lock.l_type=F_WRLCK;
+            if(fcntl(lock_fd,F_GETLK,&lock)==0 && lock.l_type!=F_UNLCK) {
+                char expected[80],actual[80]={0};
+                int length=snprintf(expected,sizeof expected,"alarm-applet-ipc-v1 %ld\n",(long)lock.l_pid);
+                ssize_t bytes=pread(lock_fd,actual,sizeof actual-1,0);
+                if(bytes!=length || memcmp(actual,expected,(size_t)length)) {
+                    fputs("An older instance is running. Stop it before using this version.\n",stderr);
+                    close(lock_fd); return 1;
+                }
+                int result=kill(lock.l_pid,hidden?SIGUSR2:SIGUSR1);
+                close(lock_fd); return result<0?1:0;
+            }
+        }
+        perror("Alarm data lock"); close(lock_fd); return 1;
+    }
+    char identity[80];
+    int identity_length=snprintf(identity,sizeof identity,"alarm-applet-ipc-v1 %ld\n",(long)getpid());
+    if(ftruncate(lock_fd,0)<0 || pwrite(lock_fd,identity,(size_t)identity_length,0)!=identity_length) {
+        perror("Alarm data lock"); close(lock_fd); return 1;
+    }
+    if(alarms_load(data_path,alarms,&count)<0) {
+        fprintf(stderr,"Cannot read alarm data: %s\n",data_path); close(lock_fd); return 1;
+    }
     Widget column=XtVaCreateManagedWidget("main",xmRowColumnWidgetClass,shell,NULL);
     list=XmCreateScrolledList(column,"alarms",NULL,0); XtVaSetValues(list,XmNvisibleItemCount,8,XmNwidth,480,NULL); XtManageChild(list);
     Widget row=XtVaCreateManagedWidget("actions",xmRowColumnWidgetClass,column,XmNorientation,XmHORIZONTAL,NULL);
@@ -239,7 +309,7 @@ int main(int argc,char **argv) {
     XtVaSetValues(shell,XmNdeleteResponse,XmDO_NOTHING,NULL); XmAddWMProtocolCallback(shell,close_atom,hide,NULL);
     for(int type=2;type<LASTEvent;type++)
         previous_dispatch[type]=XtSetEventDispatcher(XtDisplay(shell),type,dispatch_event);
-    int docked=dock(); if(hidden && docked) { XtUnmapWidget(shell); start_hidden=0; }
-    if(!docked) fprintf(stderr,"No X11 system tray is available; keeping the window visible.\n");
+    dock();
+    if(!start_hidden) show_window();
     tick(NULL,NULL); XtAppMainLoop(app); XtDestroyWidget(shell); close(lock_fd); return 0;
 }

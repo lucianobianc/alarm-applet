@@ -26,10 +26,12 @@ make install
 
 The default install prefix is `~/.local`. X11 is required; Wayland sessions need
 XWayland. The tray uses XEmbed and requires a compatible desktop tray or extension.
-Without a tray, the window remains visible at startup.
+`--hidden` starts without mapping the window, even before the panel is running.
+Launching again opens the existing window; launching with `--hidden` hides it.
 
 The app generates a beep through the default ALSA output. No desktop
 sound theme or X11 bell is required. System volume and output routing still apply.
+Overlapping alarms share a tone until the latest end time.
 
 ## Start with the desktop session
 
@@ -39,8 +41,9 @@ Install the app and enable startup in the tray:
 make install-autostart
 ```
 
-`--hidden` hides the window when an X11 tray becomes available. Remove
-`~/.config/autostart/alarm-applet.desktop` to disable automatic startup.
+You can also put `alarm-applet --hidden &` in `.xinitrc`, or use the executable's
+absolute path with `--hidden` in Xfce Session and Startup. Remove the autostart
+entry to disable automatic startup.
 
 ## Font size
 
@@ -49,4 +52,12 @@ run `xrdb -merge ~/.Xresources` and restart the app:
 
 ```text
 AlarmApplet*fontList: -*-helvetica-medium-r-normal--24-*-*-*-*-*-iso8859-1
+```
+
+## GUI and runtime checks
+
+With `xvfb`, `xauth` and Python 3 installed:
+
+```sh
+xvfb-run -a make test-ui test-tray test-runtime
 ```

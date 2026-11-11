@@ -9,14 +9,13 @@ int alarm_valid(const Alarm *a) {
 }
 int alarm_due(Alarm *a, time_t now) {
     struct tm local;
-    localtime_r(&now, &local);
+    if(!localtime_r(&now, &local)) return 0;
     /* Only fire at the scheduled minute, never catch up missed alarms. */
     if (!alarm_valid(a) || !(a->days & (1 << local.tm_wday)) ||
         a->hour != local.tm_hour || a->minute != local.tm_min) return 0;
     if (a->last_fired) {
         struct tm previous;
-        localtime_r(&a->last_fired, &previous);
-        if (previous.tm_year == local.tm_year && previous.tm_yday == local.tm_yday) return 0;
+        if (localtime_r(&a->last_fired, &previous) && previous.tm_year == local.tm_year && previous.tm_yday == local.tm_yday) return 0;
     }
     a->last_fired = now;
     return 1;

@@ -5,9 +5,11 @@
 #include <signal.h>
 #include <stdio.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 int sound_play(const char *device, unsigned seconds, unsigned frequency) {
+    if(seconds<1 || seconds>3600 || frequency<20 || frequency>20000) return 1;
     snd_pcm_t *pcm=NULL;
     int result=snd_pcm_open(&pcm,device,SND_PCM_STREAM_PLAYBACK,0);
     if(result<0) { fprintf(stderr,"Audio: %s\n",snd_strerror(result)); return 1; }
@@ -39,8 +41,13 @@ int sound_play(const char *device, unsigned seconds, unsigned frequency) {
     result=snd_pcm_drain(pcm); snd_pcm_close(pcm); return result<0;
 }
 pid_t sound_start(unsigned seconds, unsigned frequency) {
+    pid_t parent=getpid();
     pid_t child=fork();
-    if(child==0) _exit(sound_play("default",seconds,frequency));
+    if(child==0) {
+        signal(SIGTERM,SIG_DFL); signal(SIGINT,SIG_DFL); signal(SIGUSR1,SIG_DFL); signal(SIGUSR2,SIG_DFL);
+        if(prctl(PR_SET_PDEATHSIG,SIGTERM)<0 || getppid()!=parent) _exit(1);
+        _exit(sound_play("default",seconds,frequency));
+    }
     return child;
 }
 void sound_stop(pid_t *pid) {

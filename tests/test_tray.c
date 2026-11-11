@@ -45,20 +45,15 @@ int main(void) {
     check(!XGetSelectionOwner(d,selection),"use an isolated X server without a tray");
     check(mkdtemp(config)!=NULL,"cannot create temporary configuration");
     atexit(cleanup);
-    Window manager=XCreateSimpleWindow(d,root,600,600,50,50,0,0,0);
-    XSetSelectionOwner(d,selection,manager,CurrentTime); XSync(d,False);
+    XSelectInput(d,root,SubstructureNotifyMask);
+    XSync(d,False);
     child=fork(); check(child>=0,"cannot start app");
     if(!child) {
         setenv("XDG_CONFIG_HOME",config,1);
-        execl("./alarm-applet","alarm-applet","--hidden",NULL); _exit(127);
+        execl("./alarm-applet","alarm-applet","-geometry","500x300","--hidden",NULL); _exit(127);
     }
     Window icon=0,main_window=0;
-    for(int i=0;i<30 && (!icon || !main_window);i++) {
-        while(XPending(d)) {
-            XEvent event; XNextEvent(d,&event);
-            if(event.type==ClientMessage && event.xclient.message_type==XInternAtom(d,"_NET_SYSTEM_TRAY_OPCODE",False))
-                icon=(Window)event.xclient.data.l[2];
-        }
+    for(int i=0;i<30 && !main_window;i++) {
         Window returned,parent,*children=NULL; unsigned count=0;
         XQueryTree(d,root,&returned,&parent,&children,&count);
         for(unsigned j=0;j<count;j++) {
@@ -69,7 +64,35 @@ int main(void) {
         if(children) XFree(children);
         settle();
     }
-    check(icon && main_window,"app did not request docking");
+    check(main_window!=0,"app did not create its window");
+    check_visible(d,main_window,0);
+    while(XPending(d)) {
+        XEvent event; XNextEvent(d,&event);
+        check(!(event.type==MapNotify && event.xmap.window==main_window),
+              "--hidden briefly mapped the main window");
+    }
+    /* Repeated hidden launches must neither exit with an error nor open the window. */
+    pid_t duplicate=fork(); check(duplicate>=0,"cannot launch duplicate");
+    if(!duplicate) {
+        setenv("XDG_CONFIG_HOME",config,1);
+        execl("./alarm-applet","alarm-applet","--hidden",NULL); _exit(127);
+    }
+    int duplicate_status;
+    waitpid(duplicate,&duplicate_status,0);
+    check(WIFEXITED(duplicate_status) && !WEXITSTATUS(duplicate_status),"hidden duplicate failed");
+    check_visible(d,main_window,0);
+    /* A panel started after the app must still acquire the icon. */
+    Window manager=XCreateSimpleWindow(d,root,600,600,50,50,0,0,0);
+    XSetSelectionOwner(d,selection,manager,CurrentTime); XSync(d,False);
+    for(int i=0;i<30 && !icon;i++) {
+        while(XPending(d)) {
+            XEvent event; XNextEvent(d,&event);
+            if(event.type==ClientMessage && event.xclient.message_type==XInternAtom(d,"_NET_SYSTEM_TRAY_OPCODE",False))
+                icon=(Window)event.xclient.data.l[2];
+        }
+        settle();
+    }
+    check(icon!=0,"app did not dock with the late panel");
     XSizeHints hints; long supplied;
     check(XGetWMNormalHints(d,icon,&hints,&supplied),"icon has no size hints");
     check((hints.flags&PMinSize) && hints.min_width>=24 && hints.min_height>=24,
@@ -103,7 +126,46 @@ int main(void) {
     check_visible(d,main_window,0);
     XSendEvent(d,icon,False,ButtonPressMask,&click);
     check_visible(d,main_window,1);
+    /* A normal second invocation raises the existing window. */
+    XSendEvent(d,main_window,False,NoEventMask,&close);
+    check_visible(d,main_window,0);
+    duplicate=fork(); check(duplicate>=0,"cannot launch duplicate");
+    if(!duplicate) {
+        setenv("XDG_CONFIG_HOME",config,1);
+        execl("./alarm-applet","alarm-applet",NULL); _exit(127);
+    }
+    waitpid(duplicate,&duplicate_status,0);
+    check(WIFEXITED(duplicate_status) && !WEXITSTATUS(duplicate_status),"normal duplicate failed");
+    check_visible(d,main_window,1);
+    duplicate=fork(); check(duplicate>=0,"cannot launch duplicate");
+    if(!duplicate) {
+        setenv("XDG_CONFIG_HOME",config,1);
+        execl("./alarm-applet","alarm-applet","--hidden",NULL); _exit(127);
+    }
+    waitpid(duplicate,&duplicate_status,0);
+    check(WIFEXITED(duplicate_status) && !WEXITSTATUS(duplicate_status),"hidden duplicate failed");
+    check_visible(d,main_window,0);
+    /* Restarting a panel destroys its embedded windows. Recreate and dock again. */
+    XDestroyWindow(d,manager); XSync(d,False);
+    manager=XCreateSimpleWindow(d,root,600,600,50,50,0,0,0);
+    XSetSelectionOwner(d,selection,manager,CurrentTime); XSync(d,False);
+    Window replacement=0;
+    for(int i=0;i<30 && !replacement;i++) {
+        while(XPending(d)) {
+            XEvent event; XNextEvent(d,&event);
+            if(event.type==ClientMessage && event.xclient.message_type==XInternAtom(d,"_NET_SYSTEM_TRAY_OPCODE",False))
+                replacement=(Window)event.xclient.data.l[2];
+        }
+        settle();
+    }
+    check(replacement && replacement!=icon,"app did not recover after panel restart");
+    XReparentWindow(d,replacement,manager,0,0);
+    embed.xclient.window=replacement; embed.xclient.data.l[3]=(long)manager;
+    XSendEvent(d,replacement,False,NoEventMask,&embed); XMapWindow(d,manager);
+    check_visible(d,replacement,1);
+    kill(child,SIGTERM); waitpid(child,&status,0); child=0;
+    check(WIFEXITED(status) && !WEXITSTATUS(status),"app did not exit cleanly");
     XCloseDisplay(d);
-    puts("Tray: XEmbed notification, hidden startup, reopen and close-to-hide passed.");
+    puts("Tray: no initial map, late panel, duplicates, XEmbed, reopen, close, panel restart and shutdown passed.");
     return 0;
 }
