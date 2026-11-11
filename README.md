@@ -5,8 +5,8 @@ Weekly alarms for Linux, written in C with Motif.
 - Add, edit and delete alarms; select Sunday through Saturday.
 - Enter times in 24-hour or 12-hour AM/PM format.
 - Set the beep frequency from 20 to 20000 Hz (default: 1000 Hz).
-- Set the total beep period from 1 to 3600 seconds; Stop sound ends it early.
-- Closing the window hides it. Click the tray icon to reopen it; Quit exits.
+- Set the total beep period from 1 to 3600 seconds; Stop alarm ends it early.
+- Closing the window hides it. Click the tray icon to reopen it.
 
 The app must remain running. There is no snooze or missed-alarm notification.
 Alarms use local time and are saved in `$XDG_CONFIG_HOME/alarm-applet/alarms`

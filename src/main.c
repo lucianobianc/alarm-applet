@@ -150,7 +150,6 @@ static void tick(XtPointer p,XtIntervalId *id) {
     XtAppAddTimeOut(app,500,tick,NULL);
 }
 static void hide(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; if(tray) XtUnmapWidget(shell); else XIconifyWindow(XtDisplay(shell),XtWindow(shell),DefaultScreen(XtDisplay(shell))); }
-static void quit(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; sound_stop(&sound_pid); XtAppSetExitFlag(app); }
 /* Tray windows are raw X11 windows. Never dispatch their XEmbed messages
  * through the Motif shell: its protocol handler requires the shell's window. */
 static Boolean dispatch_event(XEvent *event) {
@@ -232,9 +231,9 @@ int main(int argc,char **argv) {
     Widget column=XtVaCreateManagedWidget("main",xmRowColumnWidgetClass,shell,NULL);
     list=XmCreateScrolledList(column,"alarms",NULL,0); XtVaSetValues(list,XmNvisibleItemCount,8,XmNwidth,480,NULL); XtManageChild(list);
     Widget row=XtVaCreateManagedWidget("actions",xmRowColumnWidgetClass,column,XmNorientation,XmHORIZONTAL,NULL);
-    const char *labels[]={"Add...","Edit...","Delete","Stop sound","Hide","Quit"};
-    XtCallbackProc callbacks[]={open_edit,open_edit,remove_alarm,stop,hide,quit};
-    for(int i=0;i<6;i++) { Widget b=XtVaCreateManagedWidget(labels[i],xmPushButtonWidgetClass,row,NULL); XtAddCallback(b,XmNactivateCallback,callbacks[i],i==1?(XtPointer)1:NULL); }
+    const char *labels[]={"Add...","Edit...","Delete","Stop alarm","Hide"};
+    XtCallbackProc callbacks[]={open_edit,open_edit,remove_alarm,stop,hide};
+    for(size_t i=0;i<sizeof labels/sizeof *labels;i++) { Widget b=XtVaCreateManagedWidget(labels[i],xmPushButtonWidgetClass,row,NULL); XtAddCallback(b,XmNactivateCallback,callbacks[i],i==1?(XtPointer)1:NULL); }
     refresh(); XtRealizeWidget(shell);
     Atom close_atom=XmInternAtom(XtDisplay(shell),"WM_DELETE_WINDOW",False);
     XtVaSetValues(shell,XmNdeleteResponse,XmDO_NOTHING,NULL); XmAddWMProtocolCallback(shell,close_atom,hide,NULL);
