@@ -1,5 +1,6 @@
 /* Run on an isolated X server: xvfb-run -a make test-tray. */
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <assert.h>
 #include <signal.h>
 #include <stdio.h>
@@ -69,16 +70,24 @@ int main(void) {
         settle();
     }
     check(icon && main_window,"app did not request docking");
+    XSizeHints hints; long supplied;
+    check(XGetWMNormalHints(d,icon,&hints,&supplied),"icon has no size hints");
+    check((hints.flags&PMinSize) && hints.min_width>=24 && hints.min_height>=24,
+          "icon has no usable minimum size");
+    XWindowAttributes initial;
+    XGetWindowAttributes(d,icon,&initial);
+    check(initial.map_state==IsUnmapped,"icon mapped before embedding");
     XReparentWindow(d,icon,manager,0,0);
     XEvent embed={0};
     embed.xclient.type=ClientMessage; embed.xclient.window=icon;
     embed.xclient.message_type=XInternAtom(d,"_XEMBED",False);
     embed.xclient.format=32; embed.xclient.data.l[3]=(long)manager;
     XSendEvent(d,icon,False,NoEventMask,&embed);
-    XMapWindow(d,manager); XMapWindow(d,icon);
+    XMapWindow(d,manager);
     XClearArea(d,icon,0,0,0,0,True); XSync(d,False); settle();
     int status;
     check(waitpid(child,&status,WNOHANG)==0,"app exited after XEmbed notification");
+    check_visible(d,icon,1);
     check_visible(d,main_window,0);
     XEvent click={0};
     click.xbutton.type=ButtonPress; click.xbutton.display=d;

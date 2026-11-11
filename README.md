@@ -4,6 +4,7 @@ Weekly alarms for Linux, written in C with Motif.
 
 - Add, edit and delete alarms; select Sunday through Saturday.
 - Enter times in 24-hour or 12-hour AM/PM format.
+- Set the beep frequency from 20 to 20000 Hz (default: 1000 Hz).
 - Set the total beep period from 1 to 3600 seconds; Stop sound ends it early.
 - Closing the window hides it. Click the tray icon to reopen it; Quit exits.
 
@@ -27,7 +28,7 @@ The default install prefix is `~/.local`. X11 is required; Wayland sessions need
 XWayland. The tray uses XEmbed and requires a compatible desktop tray or extension.
 Without a tray, the window remains visible at startup.
 
-The app generates an 880 Hz beep through the default ALSA output. No desktop
+The app generates a beep through the default ALSA output. No desktop
 sound theme or X11 bell is required. System volume and output routing still apply.
 
 ## Start with the desktop session

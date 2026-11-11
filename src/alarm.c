@@ -5,7 +5,7 @@ int alarm_hour(int h, int twelve, int pm) {
 }
 int alarm_valid(const Alarm *a) {
     return a->hour >= 0 && a->hour < 24 && a->minute >= 0 && a->minute < 60 &&
-        a->days > 0 && a->days < 128 && a->duration >= 1 && a->duration <= 3600;
+        a->days > 0 && a->days < 128 && a->duration >= 1 && a->duration <= 3600 && a->frequency >= 20 && a->frequency <= 20000;
 }
 int alarm_due(Alarm *a, time_t now) {
     struct tm local;

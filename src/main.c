@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 static XtAppContext app;
-static Widget shell, list, editor, hour_input, minute_input, duration_input, twelve, pm, days[7];
+static Widget shell, list, editor, hour_input, minute_input, duration_input, frequency_input, twelve, pm, days[7];
 static Alarm alarms[MAX_ALARMS];
 static int count, editing=-1, ringing;
 static pid_t sound_pid;
@@ -45,7 +45,7 @@ static int save(void) {
     FILE *f=fopen(temporary,"w");
     if (!f) { error_message("Cannot save alarms."); return 0; }
     int ok=1;
-    for(int i=0;i<count;i++) if(fprintf(f,"%d %d %d %d\n",alarms[i].hour,alarms[i].minute,alarms[i].days,alarms[i].duration)<0) ok=0;
+    for(int i=0;i<count;i++) if(fprintf(f,"%d %d %d %d %d\n",alarms[i].hour,alarms[i].minute,alarms[i].days,alarms[i].duration,alarms[i].frequency)<0) ok=0;
     if(fclose(f)) ok=0;
     if(!ok || rename(temporary,data_path)) { unlink(temporary); error_message("Cannot save alarms."); return 0; }
     return 1;
@@ -68,7 +68,7 @@ static int selected_index(void) {
 static int number(Widget input) {
     char *s=XmTextFieldGetString(input),*end;
     errno=0; long n=strtol(s,&end,10);
-    int value=(!*s || *end || errno || n<0 || n>3600)?-1:(int)n;
+    int value=(!*s || *end || errno || n<0 || n>20000)?-1:(int)n;
     XtFree(s); return value;
 }
 static void cancel_edit(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; XtDestroyWidget(editor); editor=NULL; }
@@ -76,9 +76,9 @@ static void commit_edit(Widget w,XtPointer p,XtPointer c) {
     (void)w;(void)p;(void)c;
     Alarm a={0};
     a.hour=alarm_hour(number(hour_input),XmToggleButtonGetState(twelve),XmToggleButtonGetState(pm));
-    a.minute=number(minute_input); a.duration=number(duration_input);
+    a.minute=number(minute_input); a.duration=number(duration_input); a.frequency=number(frequency_input);
     for(int d=0;d<7;d++) if(XmToggleButtonGetState(days[d])) a.days|=1<<d;
-    if(!alarm_valid(&a)) { error_message("Enter a valid time, select at least one day, and use a beep duration of 1–3600 seconds."); return; }
+    if(!alarm_valid(&a)) { error_message("Enter a valid time, select at least one day, use a duration of 1-3600 seconds and a frequency of 20-20000 Hz."); return; }
     Alarm old={0}; int old_count=count;
     if(editing<0) alarms[count++]=a; else { old=alarms[editing]; alarms[editing]=a; }
     if(!save()) { count=old_count; if(editing>=0) alarms[editing]=old; return; }
@@ -104,7 +104,7 @@ static void open_edit(Widget w,XtPointer p,XtPointer c) {
     editing=p?selected_index():-1;
     if(p && editing<0) return;
     if(editing<0 && count==MAX_ALARMS) { error_message("The alarm limit is 128."); return; }
-    Alarm a=editing<0?(Alarm){9,0,127,5,0}:alarms[editing];
+    Alarm a=editing<0?(Alarm){9,0,127,5,1000,0}:alarms[editing];
     editor=XmCreateFormDialog(shell,"Alarm",NULL,0);
     Widget column=XtVaCreateManagedWidget("fields",xmRowColumnWidgetClass,editor,NULL);
     hour_input=field(column,"Hour",a.hour); minute_input=field(column,"Minute",a.minute);
@@ -114,6 +114,7 @@ static void open_edit(Widget w,XtPointer p,XtPointer c) {
     Widget row=XtVaCreateManagedWidget("Days",xmRowColumnWidgetClass,column,XmNorientation,XmHORIZONTAL,NULL);
     for(int d=0;d<7;d++) days[d]=XtVaCreateManagedWidget(day_names[d],xmToggleButtonWidgetClass,row,XmNset,(Boolean)!!(a.days&(1<<d)),NULL);
     duration_input=field(column,"Beep duration (seconds)",a.duration);
+    frequency_input=field(column,"Beep frequency (Hz)",a.frequency);
     Widget button=XtVaCreateManagedWidget("OK",xmPushButtonWidgetClass,column,NULL); XtAddCallback(button,XmNactivateCallback,commit_edit,NULL);
     button=XtVaCreateManagedWidget("Cancel",xmPushButtonWidgetClass,column,NULL); XtAddCallback(button,XmNactivateCallback,cancel_edit,NULL);
     XtVaSetValues(editor,XmNdefaultButton,XtNameToWidget(column,"OK"),XmNcancelButton,button,NULL);
@@ -135,7 +136,7 @@ static void tick(XtPointer p,XtIntervalId *id) {
         if(!ringing || end>ring_end.tv_sec) {ring_end.tv_sec=end;ring_end.tv_nsec=mono.tv_nsec;}
         ringing=1;
         sound_stop(&sound_pid);
-        sound_pid=sound_start((unsigned)(ring_end.tv_sec-mono.tv_sec));
+        sound_pid=sound_start((unsigned)(ring_end.tv_sec-mono.tv_sec),(unsigned)alarms[i].frequency);
         if(sound_pid<0) { ringing=0; error_message("Cannot start audio playback."); }
     }
     if(ringing && (mono.tv_sec>ring_end.tv_sec || (mono.tv_sec==ring_end.tv_sec && mono.tv_nsec>=ring_end.tv_nsec))) ringing=0;
@@ -154,6 +155,11 @@ static void quit(Widget w,XtPointer p,XtPointer c) { (void)w;(void)p;(void)c; so
  * through the Motif shell: its protocol handler requires the shell's window. */
 static Boolean dispatch_event(XEvent *event) {
     if(tray && event->xany.window==tray) {
+        if(event->type==ClientMessage &&
+           event->xclient.message_type==XInternAtom(XtDisplay(shell),"_XEMBED",False) &&
+           event->xclient.data.l[1]==0) {
+            XMapWindow(XtDisplay(shell),tray);
+        }
         if(event->type==ButtonPress) XtMapWidget(shell);
         if(event->type==Expose) {
             Display *d=XtDisplay(shell); GC gc=XCreateGC(d,tray,0,NULL);
@@ -173,13 +179,24 @@ static int dock(void) {
     Display *d=XtDisplay(shell); char name[64]; snprintf(name,sizeof name,"_NET_SYSTEM_TRAY_S%d",DefaultScreen(d));
     Window manager=XGetSelectionOwner(d,XInternAtom(d,name,False)); if(!manager)return 0;
     tray=XCreateSimpleWindow(d,DefaultRootWindow(d),0,0,24,24,0,0,WhitePixel(d,DefaultScreen(d)));
+    XSizeHints size={0};
+    size.flags=PMinSize|PMaxSize|PBaseSize|PSize;
+    size.min_width=size.min_height=24;
+    size.max_width=size.max_height=24;
+    size.base_width=size.base_height=24;
+    size.width=size.height=24;
+    XSetWMNormalHints(d,tray,&size);
+    XClassHint identity={"alarm-applet","AlarmApplet"};
+    XSetClassHint(d,tray,&identity);
+    XStoreName(d,tray,"Alarm Applet Tray");
     unsigned long info[2]={0,1}; Atom embed=XInternAtom(d,"_XEMBED_INFO",False);
     XChangeProperty(d,tray,embed,embed,32,PropModeReplace,(unsigned char *)info,2);
     XSelectInput(d,tray,ExposureMask|ButtonPressMask);
     XEvent event={0}; event.xclient.type=ClientMessage; event.xclient.window=manager;
     event.xclient.message_type=XInternAtom(d,"_NET_SYSTEM_TRAY_OPCODE",False); event.xclient.format=32;
     event.xclient.data.l[0]=CurrentTime; event.xclient.data.l[1]=0; event.xclient.data.l[2]=(long)tray;
-    XSendEvent(d,manager,False,NoEventMask,&event); XFlush(d); return 1;
+    XSendEvent(d,manager,False,NoEventMask,&event);
+    XFlush(d); return 1;
 }
 int main(int argc,char **argv) {
     int hidden=argc>1 && !strcmp(argv[1],"--hidden");
@@ -198,7 +215,15 @@ int main(int argc,char **argv) {
     struct flock lock={.l_type=F_WRLCK,.l_whence=SEEK_SET};
     if(lock_fd<0 || fcntl(lock_fd,F_SETLK,&lock)<0) { fputs("Alarm Applet is already running or its data directory is unavailable.\n",stderr); return 1; }
     FILE *f=fopen(data_path,"r");
-    if(f) { Alarm a={0}; while(count<MAX_ALARMS && fscanf(f,"%d %d %d %d",&a.hour,&a.minute,&a.days,&a.duration)==4) if(alarm_valid(&a)) alarms[count++]=a; fclose(f); }
+    if(f) {
+        char line[256];
+        while(count<MAX_ALARMS && fgets(line,sizeof line,f)) {
+            Alarm a={.frequency=1000};
+            int fields=sscanf(line,"%d %d %d %d %d",&a.hour,&a.minute,&a.days,&a.duration,&a.frequency);
+            if(fields>=4 && alarm_valid(&a)) alarms[count++]=a;
+        }
+        fclose(f);
+    }
     static String defaults[]={
         "*fontList: -*-helvetica-medium-r-normal--18-*-*-*-*-*-iso8859-1",
         NULL

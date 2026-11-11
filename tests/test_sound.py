@@ -26,5 +26,5 @@ with tempfile.TemporaryDirectory() as directory:
     assert max(samples[24000:36000]) > 5000
     assert all(sample == 0 for sample in samples[36000:])
     crossings = sum(a <= 0 < b for a, b in zip(samples[240:11759], samples[241:11760]))
-    assert 209 <= crossings <= 213, crossings
-print("Audio: 880 Hz tone, pauses and exact one-second duration passed.")
+    assert 238 <= crossings <= 242, crossings
+print("Audio: 1000 Hz tone, pauses and exact one-second duration passed.")
