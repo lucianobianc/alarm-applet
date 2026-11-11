@@ -199,7 +199,11 @@ int main(int argc,char **argv) {
     if(lock_fd<0 || fcntl(lock_fd,F_SETLK,&lock)<0) { fputs("Alarm Applet is already running or its data directory is unavailable.\n",stderr); return 1; }
     FILE *f=fopen(data_path,"r");
     if(f) { Alarm a={0}; while(count<MAX_ALARMS && fscanf(f,"%d %d %d %d",&a.hour,&a.minute,&a.days,&a.duration)==4) if(alarm_valid(&a)) alarms[count++]=a; fclose(f); }
-    shell=XtVaAppInitialize(&app,"AlarmApplet",NULL,0,&argc,argv,NULL,XmNtitle,"Alarm Applet",NULL);
+    static String defaults[]={
+        "*fontList: -*-helvetica-medium-r-normal--18-*-*-*-*-*-iso8859-1",
+        NULL
+    };
+    shell=XtVaAppInitialize(&app,"AlarmApplet",NULL,0,&argc,argv,defaults,XmNtitle,"Alarm Applet",NULL);
     Widget column=XtVaCreateManagedWidget("main",xmRowColumnWidgetClass,shell,NULL);
     list=XmCreateScrolledList(column,"alarms",NULL,0); XtVaSetValues(list,XmNvisibleItemCount,8,XmNwidth,480,NULL); XtManageChild(list);
     Widget row=XtVaCreateManagedWidget("actions",xmRowColumnWidgetClass,column,XmNorientation,XmHORIZONTAL,NULL);
